@@ -65,11 +65,12 @@ private[parquet] class ParquetReadSupport extends ReadSupport[UnsafeRow] with Lo
       StructType.fromString(schemaString)
     }
 
-    val caseInsensitive = conf.get(SQLConf.PARQUET_CASE_INSENSITIVE_RESOLUTION.key).toBoolean
+    val caseInsensitive = conf.get(SQLConf.PARQUET_CASE_INSENSITIVE_RESOLUTION.key)
+    assert(caseInsensitive != null, "Parquet case insensitivity param not set.")
     val parquetRequestedSchema = ParquetReadSupport.clipParquetSchema(
       context.getFileSchema,
       catalystRequestedSchema,
-      caseInsensitive)
+      caseInsensitive.toBoolean)
 
     new ReadContext(parquetRequestedSchema, Map.empty[String, String].asJava)
   }

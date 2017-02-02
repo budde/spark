@@ -321,6 +321,11 @@ class ParquetFileFormat
       SQLConf.PARQUET_INT96_AS_TIMESTAMP.key,
       sparkSession.sessionState.conf.isParquetINT96AsTimestamp)
 
+    // Pass case insensitivity config param to ParquetReadSupport.
+    hadoopConf.setBoolean(
+      SQLConf.PARQUET_CASE_INSENSITIVE_RESOLUTION.key,
+      sparkSession.sessionState.conf.parquetCaseInsensitiveResolution)
+
     // Try to push down filters when filter push-down is enabled.
     val pushed =
       if (sparkSession.sessionState.conf.parquetFilterPushDown) {
