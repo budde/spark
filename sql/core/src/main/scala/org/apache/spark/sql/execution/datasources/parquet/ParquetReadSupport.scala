@@ -20,6 +20,7 @@ package org.apache.spark.sql.execution.datasources.parquet
 import java.util.{Map => JMap}
 
 import scala.collection.JavaConverters._
+import scala.collection.immutable.TreeMap
 
 import org.apache.hadoop.conf.Configuration
 import org.apache.parquet.hadoop.api.{InitContext, ReadSupport}
@@ -108,8 +109,14 @@ private[parquet] object ParquetReadSupport {
    * Tailors `parquetSchema` according to `catalystSchema` by removing column paths don't exist
    * in `catalystSchema`, and adding those only exist in `catalystSchema`.
    */
-  def clipParquetSchema(parquetSchema: MessageType, catalystSchema: StructType): MessageType = {
-    val clippedParquetFields = clipParquetGroupFields(parquetSchema.asGroupType(), catalystSchema)
+  def clipParquetSchema(
+      parquetSchema: MessageType,
+      catalystSchema: StructType,
+      caseInsensitive: Boolean = false): MessageType = {
+    val clippedParquetFields = clipParquetGroupFields(
+      parquetSchema.asGroupType(),
+      catalystSchema,
+      caseInsensitive)
     if (clippedParquetFields.isEmpty) {
       ParquetSchemaConverter.EMPTY_MESSAGE
     } else {
@@ -120,20 +127,23 @@ private[parquet] object ParquetReadSupport {
     }
   }
 
-  private def clipParquetType(parquetType: Type, catalystType: DataType): Type = {
+  private def clipParquetType(
+      parquetType: Type,
+      catalystType: DataType,
+      caseInsensitive: Boolean): Type = {
     catalystType match {
       case t: ArrayType if !isPrimitiveCatalystType(t.elementType) =>
         // Only clips array types with nested type as element type.
-        clipParquetListType(parquetType.asGroupType(), t.elementType)
+        clipParquetListType(parquetType.asGroupType(), t.elementType, caseInsensitive)
 
       case t: MapType
         if !isPrimitiveCatalystType(t.keyType) ||
            !isPrimitiveCatalystType(t.valueType) =>
         // Only clips map types with nested key type or value type
-        clipParquetMapType(parquetType.asGroupType(), t.keyType, t.valueType)
+        clipParquetMapType(parquetType.asGroupType(), t.keyType, t.valueType, caseInsensitive)
 
       case t: StructType =>
-        clipParquetGroup(parquetType.asGroupType(), t)
+        clipParquetGroup(parquetType.asGroupType(), t, caseInsensitive)
 
       case _ =>
         // UDTs and primitive types are not clipped.  For UDTs, a clipped version might not be able
@@ -159,14 +169,17 @@ private[parquet] object ParquetReadSupport {
    * of the [[ArrayType]] should also be a nested type, namely an [[ArrayType]], a [[MapType]], or a
    * [[StructType]].
    */
-  private def clipParquetListType(parquetList: GroupType, elementType: DataType): Type = {
+  private def clipParquetListType(
+      parquetList: GroupType,
+      elementType: DataType,
+      caseInsensitive: Boolean): Type = {
     // Precondition of this method, should only be called for lists with nested element types.
     assert(!isPrimitiveCatalystType(elementType))
 
     // Unannotated repeated group should be interpreted as required list of required element, so
     // list element type is just the group itself.  Clip it.
     if (parquetList.getOriginalType == null && parquetList.isRepetition(Repetition.REPEATED)) {
-      clipParquetType(parquetList, elementType)
+      clipParquetType(parquetList, elementType, caseInsensitive)
     } else {
       assert(
         parquetList.getOriginalType == OriginalType.LIST,
@@ -198,7 +211,7 @@ private[parquet] object ParquetReadSupport {
         Types
           .buildGroup(parquetList.getRepetition)
           .as(OriginalType.LIST)
-          .addField(clipParquetType(repeatedGroup, elementType))
+          .addField(clipParquetType(repeatedGroup, elementType, caseInsensitive))
           .named(parquetList.getName)
       } else {
         // Otherwise, the repeated field's type is the element type with the repeated field's
@@ -209,7 +222,7 @@ private[parquet] object ParquetReadSupport {
           .addField(
             Types
               .repeatedGroup()
-              .addField(clipParquetType(repeatedGroup.getType(0), elementType))
+              .addField(clipParquetType(repeatedGroup.getType(0), elementType, caseInsensitive))
               .named(repeatedGroup.getName))
           .named(parquetList.getName)
       }
@@ -222,7 +235,10 @@ private[parquet] object ParquetReadSupport {
    * a [[StructType]].
    */
   private def clipParquetMapType(
-      parquetMap: GroupType, keyType: DataType, valueType: DataType): GroupType = {
+      parquetMap: GroupType,
+      keyType: DataType,
+      valueType: DataType,
+      caseInsensitive: Boolean): GroupType = {
     // Precondition of this method, only handles maps with nested key types or value types.
     assert(!isPrimitiveCatalystType(keyType) || !isPrimitiveCatalystType(valueType))
 
@@ -234,8 +250,8 @@ private[parquet] object ParquetReadSupport {
       Types
         .repeatedGroup()
         .as(repeatedGroup.getOriginalType)
-        .addField(clipParquetType(parquetKeyType, keyType))
-        .addField(clipParquetType(parquetValueType, valueType))
+        .addField(clipParquetType(parquetKeyType, keyType, caseInsensitive))
+        .addField(clipParquetType(parquetValueType, valueType, caseInsensitive))
         .named(repeatedGroup.getName)
 
     Types
@@ -253,8 +269,11 @@ private[parquet] object ParquetReadSupport {
    *       [[MessageType]].  Because it's legal to construct an empty requested schema for column
    *       pruning.
    */
-  private def clipParquetGroup(parquetRecord: GroupType, structType: StructType): GroupType = {
-    val clippedParquetFields = clipParquetGroupFields(parquetRecord, structType)
+  private def clipParquetGroup(
+      parquetRecord: GroupType,
+      structType: StructType,
+      caseInsensitive: Boolean): GroupType = {
+    val clippedParquetFields = clipParquetGroupFields(parquetRecord, structType, caseInsensitive)
     Types
       .buildGroup(parquetRecord.getRepetition)
       .as(parquetRecord.getOriginalType)
@@ -268,13 +287,23 @@ private[parquet] object ParquetReadSupport {
    * @return A list of clipped [[GroupType]] fields, which can be empty.
    */
   private def clipParquetGroupFields(
-      parquetRecord: GroupType, structType: StructType): Seq[Type] = {
-    val parquetFieldMap = parquetRecord.getFields.asScala.map(f => f.getName -> f).toMap
+      parquetRecord: GroupType,
+      structType: StructType,
+      caseInsensitive: Boolean): Seq[Type] = {
+    val parquetFieldMap = {
+      val pairs = parquetRecord.getFields.asScala.map(f => f.getName -> f)
+      implicit val ordering = if (caseInsensitive) {
+        Ordering.by[String, String](_.toLowerCase)
+      } else {
+        Ordering.String
+      }
+      TreeMap(pairs: _*)
+    }
     val toParquet = new ParquetSchemaConverter(writeLegacyParquetFormat = false)
     structType.map { f =>
       parquetFieldMap
         .get(f.name)
-        .map(clipParquetType(_, f.dataType))
+        .map(clipParquetType(_, f.dataType, caseInsensitive))
         .getOrElse(toParquet.convertField(f))
     }
   }
