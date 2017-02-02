@@ -31,6 +31,7 @@ import org.apache.parquet.schema.Type.Repetition
 
 import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.expressions.UnsafeRow
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 /**
@@ -57,15 +58,18 @@ private[parquet] class ParquetReadSupport extends ReadSupport[UnsafeRow] with Lo
    * readers.  Responsible for figuring out Parquet requested schema used for column pruning.
    */
   override def init(context: InitContext): ReadContext = {
+    val conf = context.getConfiguration
     catalystRequestedSchema = {
-      val conf = context.getConfiguration
       val schemaString = conf.get(ParquetReadSupport.SPARK_ROW_REQUESTED_SCHEMA)
       assert(schemaString != null, "Parquet requested schema not set.")
       StructType.fromString(schemaString)
     }
 
-    val parquetRequestedSchema =
-      ParquetReadSupport.clipParquetSchema(context.getFileSchema, catalystRequestedSchema)
+    val caseInsensitive = conf.get(SQLConf.PARQUET_CASE_INSENSITIVE_RESOLUTION.key).toBoolean
+    val parquetRequestedSchema = ParquetReadSupport.clipParquetSchema(
+      context.getFileSchema,
+      catalystRequestedSchema,
+      caseInsensitive)
 
     new ReadContext(parquetRequestedSchema, Map.empty[String, String].asJava)
   }
