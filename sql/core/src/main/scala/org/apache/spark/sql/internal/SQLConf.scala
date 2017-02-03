@@ -257,7 +257,7 @@ object SQLConf {
   val PARQUET_CASE_INSENSITIVE_RESOLUTION =
     SQLConfigBuilder("spark.sql.parquet.caseInsensitiveResolution")
       .doc("Whether to use case insensitive matching when resolving Parquet columns by "
-        + "their field names. Defaults to false.")
+        + "their field names. Disables Parquet filter push-down if enabled. Defaults to false.")
       .booleanConf
       .createWithDefault(false)
 
